@@ -1,0 +1,512 @@
+# -*- coding: utf-8 -*-
+
+"""
+واجهة المستخدم التفاعلية لمحطة الخطوط الحديدية
+=========================================
+هذا الملف يحتوي على تنفيذ واجهة المستخدم التفاعلية لمحطة الخطوط الحديدية
+التي تتكامل مع جميع الأنظمة الفرعية (دارات الخط، المفاتيح، الإشارات، الاتصالات، الكاميرات، والتحكم عن بعد).
+
+المواصفات الفنية:
+- إطار العمل: PyQt5
+- تصميم متجاوب: نعم
+- دعم اللغة العربية: نعم
+- دعم الوضع الليلي: نعم
+"""
+
+import os
+import sys
+import json
+import time
+import datetime
+import threading
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+from enum import Enum, auto
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
+                            QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit, QTableWidget,
+                            QTableWidgetItem, QCheckBox, QRadioButton, QGroupBox, QFormLayout,
+                            QSlider, QProgressBar, QMessageBox, QSplitter, QFrame, QGridLayout,
+                            QScrollArea, QSizePolicy, QSpacerItem, QFileDialog, QDialog, QMenu,
+                            QAction, QToolBar, QStatusBar, QDockWidget, QTreeWidget, QTreeWidgetItem)
+from PyQt5.QtGui import (QIcon, QPixmap, QFont, QColor, QPalette, QPainter, QPen, QBrush,
+                        QPolygon, QImage, QCursor, QKeySequence, QTransform, QFontDatabase)
+from PyQt5.QtCore import (Qt, QSize, QRect, QPoint, QTimer, QThread, pyqtSignal, pyqtSlot,
+                        QObject, QEvent, QDateTime, QDate, QTime, QUrl, QByteArray, QBuffer)
+
+# استيراد الأنظمة الفرعية
+try:
+    from railway_station_model import RailwayStation, Track, Switch, Signal, Route
+    from track_circuit_detection import TrackCircuit, TrackCircuitDetector, TrainDetector
+    from switch_control_system import SwitchController, SwitchMotor, SwitchState
+    from signal_control_system import SignalController, SignalState
+    from communication_system import CommunicationSystem, CommunicationType, MessageType, MessagePriority
+    from camera_surveillance_system import CameraSurveillanceSystem, Camera, CameraType, DetectionType
+    from remote_control_system import RemoteControlSystem, UserRole, AccessLevel
+except ImportError:
+    # إذا لم تكن الوحدات متاحة، نستخدم نماذج وهمية للعرض فقط
+    print("تحذير: لم يتم العثور على بعض الوحدات، سيتم استخدام نماذج وهمية للعرض فقط")
+    
+    # تعريف الأنواع المطلوبة
+    class SwitchState(Enum):
+        NORMAL = auto()
+        REVERSE = auto()
+        MOVING = auto()
+        UNKNOWN = auto()
+        FAULTY = auto()
+    
+    class SignalState(Enum):
+        RED = auto()
+        YELLOW = auto()
+        GREEN = auto()
+        FAULTY = auto()
+    
+    class CameraType(Enum):
+        FIXED = auto()
+        PTZ = auto()
+        THERMAL = auto()
+        INFRARED = auto()
+    
+    class UserRole(Enum):
+        ADMIN = auto()
+        OPERATOR = auto()
+        SUPERVISOR = auto()
+        VIEWER = auto()
+        MAINTENANCE = auto()
+
+# تعريف الألوان
+class Colors:
+    """ألوان واجهة المستخدم"""
+    PRIMARY = "#1976D2"
+    SECONDARY = "#424242"
+    SUCCESS = "#4CAF50"
+    WARNING = "#FFC107"
+    DANGER = "#F44336"
+    INFO = "#2196F3"
+    LIGHT = "#F5F5F5"
+    DARK = "#212121"
+    WHITE = "#FFFFFF"
+    BLACK = "#000000"
+    GRAY = "#9E9E9E"
+    
+    # ألوان العناصر
+    TRACK_FREE = "#4CAF50"
+    TRACK_OCCUPIED = "#F44336"
+    TRACK_UNKNOWN = "#9E9E9E"
+    SWITCH_NORMAL = "#2196F3"
+    SWITCH_REVERSE = "#FF9800"
+    SWITCH_MOVING = "#FFC107"
+    SWITCH_FAULTY = "#F44336"
+    SIGNAL_RED = "#F44336"
+    SIGNAL_YELLOW = "#FFC107"
+    SIGNAL_GREEN = "#4CAF50"
+    SIGNAL_FAULTY = "#9E9E9E"
+    
+    # ألوان الوضع الليلي
+    DARK_BG = "#121212"
+    DARK_SURFACE = "#1E1E1E"
+    DARK_PRIMARY = "#BB86FC"
+    DARK_SECONDARY = "#03DAC6"
+
+class Theme(Enum):
+    """أنماط واجهة المستخدم"""
+    LIGHT = auto()
+    DARK = auto()
+
+class StationCanvas(FigureCanvas):
+    """لوحة رسم محطة الخطوط الحديدية"""
+    
+    def __init__(self, parent=None, width=10, height=6, dpi=100):
+        """
+        تهيئة لوحة الرسم
+        
+        المعاملات:
+            parent (QWidget): العنصر الأب
+            width (float): العرض بالبوصة
+            height (float): الارتفاع بالبوصة
+            dpi (int): عدد النقاط في البوصة
+        """
+        self.fig = Figure(figsize=(width, height), dpi=dpi)
+        self.axes = self.fig.add_subplot(111)
+        
+        # إعداد الرسم
+        self.axes.set_aspect('equal')
+        self.axes.set_xlim(0, 1000)
+        self.axes.set_ylim(0, 600)
+        self.axes.axis('off')
+        
+        # تهيئة الكائن الأب
+        super(StationCanvas, self).__init__(self.fig)
+        self.setParent(parent)
+        
+        # إعداد الكائن
+        self.setMinimumSize(800, 480)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.updateGeometry()
+        
+        # عناصر المحطة
+        self.tracks = {}
+        self.switches = {}
+        self.signals = {}
+        self.routes = {}
+        self.trains = {}
+        self.cameras = {}
+        
+        # حالة العناصر
+        self.track_states = {}
+        self.switch_states = {}
+        self.signal_states = {}
+        self.route_states = {}
+        
+        # العنصر المحدد
+        self.selected_element = None
+        self.selected_element_type = None
+        
+        # إعداد المحطة
+        self.setup_station()
+        
+        # ربط الأحداث
+        self.fig.canvas.mpl_connect('button_press_event', self.on_click)
+        
+        # مؤقت لتحديث الرسم
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_drawing)
+        self.timer.start(1000)  # تحديث كل ثانية
+    
+    def setup_station(self):
+        """إعداد محطة الخطوط الحديدية"""
+        # إنشاء المسارات
+        self.create_tracks()
+        
+        # إنشاء المفاتيح
+        self.create_switches()
+        
+        # إنشاء الإشارات
+        self.create_signals()
+        
+        # إنشاء المسارات
+        self.create_routes()
+        
+        # إنشاء الكاميرات
+        self.create_cameras()
+        
+        # تحديث الرسم
+        self.update_drawing()
+    
+    def create_tracks(self):
+        """إنشاء المسارات"""
+        # المسار الرئيسي 1
+        self.tracks["T1"] = {
+            "start": (100, 200),
+            "end": (900, 200),
+            "width": 5
+        }
+        self.track_states["T1"] = "FREE"
+        
+        # المسار الرئيسي 2
+        self.tracks["T2"] = {
+            "start": (100, 300),
+            "end": (900, 300),
+            "width": 5
+        }
+        self.track_states["T2"] = "FREE"
+        
+        # المسار الرئيسي 3
+        self.tracks["T3"] = {
+            "start": (100, 400),
+            "end": (900, 400),
+            "width": 5
+        }
+        self.track_states["T3"] = "FREE"
+        
+        # المسار الفرعي 1
+        self.tracks["T4"] = {
+            "start": (300, 200),
+            "end": (500, 300),
+            "width": 5
+        }
+        self.track_states["T4"] = "FREE"
+        
+        # المسار الفرعي 2
+        self.tracks["T5"] = {
+            "start": (500, 300),
+            "end": (700, 200),
+            "width": 5
+        }
+        self.track_states["T5"] = "FREE"
+        
+        # المسار الفرعي 3
+        self.tracks["T6"] = {
+            "start": (300, 400),
+            "end": (500, 300),
+            "width": 5
+        }
+        self.track_states["T6"] = "FREE"
+        
+        # المسار الفرعي 4
+        self.tracks["T7"] = {
+            "start": (500, 300),
+            "end": (700, 400),
+            "width": 5
+        }
+        self.track_states["T7"] = "FREE"
+    
+    def create_switches(self):
+        """إنشاء المفاتيح"""
+        # المفتاح 1
+        self.switches["SW1"] = {
+            "position": (300, 200),
+            "radius": 10
+        }
+        self.switch_states["SW1"] = SwitchState.NORMAL
+        
+        # المفتاح 2
+        self.switches["SW2"] = {
+            "position": (500, 300),
+            "radius": 10
+        }
+        self.switch_states["SW2"] = SwitchState.NORMAL
+        
+        # المفتاح 3
+        self.switches["SW3"] = {
+            "position": (700, 200),
+            "radius": 10
+        }
+        self.switch_states["SW3"] = SwitchState.NORMAL
+        
+        # المفتاح 4
+        self.switches["SW4"] = {
+            "position": (300, 400),
+            "radius": 10
+        }
+        self.switch_states["SW4"] = SwitchState.NORMAL
+        
+        # المفتاح 5
+        self.switches["SW5"] = {
+            "position": (700, 400),
+            "radius": 10
+        }
+        self.switch_states["SW5"] = SwitchState.NORMAL
+    
+    def create_signals(self):
+        """إنشاء الإشارات"""
+        # الإشارة 1
+        self.signals["SG1"] = {
+            "position": (150, 180),
+            "direction": "right",
+            "size": 15
+        }
+        self.signal_states["SG1"] = SignalState.RED
+        
+        # الإشارة 2
+        self.signals["SG2"] = {
+            "position": (850, 220),
+            "direction": "left",
+            "size": 15
+        }
+        self.signal_states["SG2"] = SignalState.RED
+        
+        # الإشارة 3
+        self.signals["SG3"] = {
+            "position": (150, 280),
+            "direction": "right",
+            "size": 15
+        }
+        self.signal_states["SG3"] = SignalState.RED
+        
+        # الإشارة 4
+        self.signals["SG4"] = {
+            "position": (850, 320),
+            "direction": "left",
+            "size": 15
+        }
+        self.signal_states["SG4"] = SignalState.RED
+        
+        # الإشارة 5
+        self.signals["SG5"] = {
+            "position": (150, 380),
+            "direction": "right",
+            "size": 15
+        }
+        self.signal_states["SG5"] = SignalState.RED
+        
+        # الإشارة 6
+        self.signals["SG6"] = {
+            "position": (850, 420),
+            "direction": "left",
+            "size": 15
+        }
+        self.signal_states["SG6"] = SignalState.RED
+    
+    def create_routes(self):
+        """إنشاء المسارات"""
+        # المسار 1
+        self.routes["R1"] = {
+            "tracks": ["T1"],
+            "switches": [],
+            "signals": ["SG1", "SG2"]
+        }
+        self.route_states["R1"] = "FREE"
+        
+        # المسار 2
+        self.routes["R2"] = {
+            "tracks": ["T2"],
+            "switches": [],
+            "signals": ["SG3", "SG4"]
+        }
+        self.route_states["R2"] = "FREE"
+        
+        # المسار 3
+        self.routes["R3"] = {
+            "tracks": ["T3"],
+            "switches": [],
+            "signals": ["SG5", "SG6"]
+        }
+        self.route_states["R3"] = "FREE"
+        
+        # المسار 4
+        self.routes["R4"] = {
+            "tracks": ["T1", "T4", "T5", "T1"],
+            "switches": ["SW1", "SW2", "SW3"],
+            "signals": ["SG1", "SG2"]
+        }
+        self.route_states["R4"] = "FREE"
+        
+        # المسار 5
+        self.routes["R5"] = {
+            "tracks": ["T3", "T6", "T7", "T3"],
+            "switches": ["SW4", "SW2", "SW5"],
+            "signals": ["SG5", "SG6"]
+        }
+        self.route_states["R5"] = "FREE"
+    
+    def create_cameras(self):
+        """إنشاء الكاميرات"""
+        # الكاميرا 1
+        self.cameras["CAM1"] = {
+            "position": (100, 100),
+            "type": CameraType.FIXED,
+            "angle": 0,
+            "range": 200
+        }
+        
+        # الكاميرا 2
+        self.cameras["CAM2"] = {
+            "position": (500, 100),
+            "type": CameraType.PTZ,
+            "angle": 90,
+            "range": 300
+        }
+        
+        # الكاميرا 3
+        self.cameras["CAM3"] = {
+            "position": (900, 100),
+            "type": CameraType.FIXED,
+            "angle": 180,
+            "range": 200
+        }
+        
+        # الكاميرا 4
+        self.cameras["CAM4"] = {
+            "position": (100, 500),
+            "type": CameraType.THERMAL,
+            "angle": 0,
+            "range": 250
+        }
+        
+        # الكاميرا 5
+        self.cameras["CAM5"] = {
+            "position": (500, 500),
+            "type": CameraType.PTZ,
+            "angle": 270,
+            "range": 300
+        }
+        
+        # الكاميرا 6
+        self.cameras["CAM6"] = {
+            "position": (900, 500),
+            "type": CameraType.FIXED,
+            "angle": 180,
+            "range": 200
+        }
+    
+    def update_drawing(self):
+        """تحديث الرسم"""
+        # مسح الرسم
+        self.axes.clear()
+        self.axes.set_xlim(0, 1000)
+        self.axes.set_ylim(0, 600)
+        self.axes.axis('off')
+        
+        # رسم المسارات
+        for track_id, track in self.tracks.items():
+            color = Colors.TRACK_FREE
+            if self.track_states[track_id] == "OCCUPIED":
+                color = Colors.TRACK_OCCUPIED
+            elif self.track_states[track_id] == "UNKNOWN":
+                color = Colors.TRACK_UNKNOWN
+            
+            self.axes.plot([track["start"][0], track["end"][0]],
+                          [track["start"][1], track["end"][1]],
+                          color=color, linewidth=track["width"])
+            
+            # رسم معرف المسار
+            mid_x = (track["start"][0] + track["end"][0]) / 2
+            mid_y = (track["start"][1] + track["end"][1]) / 2
+            self.axes.text(mid_x, mid_y + 15, track_id, ha='center', va='center',
+                          fontsize=10, color='black', bbox=dict(facecolor='white', alpha=0.7))
+        
+        # رسم المفاتيح
+        for switch_id, switch in self.switches.items():
+            color = Colors.SWITCH_NORMAL
+            if self.switch_states[switch_id] == SwitchState.REVERSE:
+                color = Colors.SWITCH_REVERSE
+            elif self.switch_states[switch_id] == SwitchState.MOVING:
+                color = Colors.SWITCH_MOVING
+            elif self.switch_states[switch_id] == SwitchState.FAULTY:
+                color = Colors.SWITCH_FAULTY
+            
+            self.axes.plot(switch["position"][0], switch["position"][1], 'o',
+                          markersize=switch["radius"], color=color)
+            
+            # رسم معرف المفتاح
+            self.axes.text(switch["position"][0], switch["position"][1] + 20, switch_id,
+                          ha='center', va='center', fontsize=10, color='black',
+                          bbox=dict(facecolor='white', alpha=0.7))
+        
+        # رسم الإشارات
+        for signal_id, signal in self.signals.items():
+            color = Colors.SIGNAL_RED
+            if self.signal_states[signal_id] == SignalState.YELLOW:
+                color = Colors.SIGNAL_YELLOW
+            elif self.signal_states[signal_id] == SignalState.GREEN:
+                color = Colors.SIGNAL_GREEN
+            elif self.signal_states[signal_id] == SignalState.FAULTY:
+                color = Colors.SIGNAL_FAULTY
+            
+            # رسم الإشارة
+            if signal["direction"] == "right":
+                self.axes.arrow(signal["position"][0], signal["position"][1],
+                               signal["size"], 0, head_width=10, head_length=10,
+                               fc=color, ec=color)
+            elif signal["direction"] == "left":
+                self.axes.arrow(signal["position"][0], signal["position"][1],
+                               -signal["size"], 0, head_width=10, head_length=10,
+                               fc=color, ec=color)
+            
+            # رسم معرف الإشارة
+            self.axes.text(signal["position"][0], signal["position"][1] - 15, signal_id,
+                          ha='center', va='center', fontsize=10, color='black',
+                          bbox=dict(facecolor='white', alpha=0.7))
+        
+        # رسم الكاميرات
+        for camera_id, camera in self.cameras.items():
+            # رسم الكاميرا
+            if camera["type"] == CameraType.FIXED:
+                color = 'blue'
+            elif camera["type"] == CameraType.PTZ:
+                color = 'green'
+            
+(Content truncated due to size limit. Use line ranges to read in chunks)
